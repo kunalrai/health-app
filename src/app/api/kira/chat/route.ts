@@ -1,9 +1,14 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { ConvexHttpClient } from 'convex/browser';
 import { api } from '../../../../../convex/_generated/api';
 import { NextRequest, NextResponse } from 'next/server';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const openai = new OpenAI({
+  baseURL: 'https://openrouter.ai/api/v1',
+  apiKey: process.env.OPENROUTER_API_KEY,
+});
+
+const MODEL = 'google/gemini-3-flash-preview';
 
 const KIRA_SYSTEM_PROMPT = `You are Kira, the dedicated AI assistant for Dr. Veenoo Agarwal's oncology practice at Shalby International Hospitals, Gurugram.
 
@@ -40,64 +45,73 @@ Rules:
 - Keep responses concise and conversational (2-4 sentences max unless explaining something)
 - When you have enough info to book, confirm all details before finalising`;
 
-const tools: Anthropic.Tool[] = [
+const tools: OpenAI.ChatCompletionTool[] = [
   {
-    name: 'book_appointment',
-    description: 'Book an appointment for a patient after collecting all required details',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        patientName: { type: 'string', description: 'Full name of the patient' },
-        patientPhone: { type: 'string', description: 'Patient phone number' },
-        patientEmail: { type: 'string', description: 'Patient email address' },
-        appointmentType: {
-          type: 'string',
-          enum: ['consultation', 'follow-up', 'test-review', 'second-opinion'],
-          description: 'Type of appointment',
+    type: 'function',
+    function: {
+      name: 'book_appointment',
+      description: 'Book an appointment for a patient after collecting all required details',
+      parameters: {
+        type: 'object',
+        properties: {
+          patientName: { type: 'string', description: 'Full name of the patient' },
+          patientPhone: { type: 'string', description: 'Patient phone number' },
+          patientEmail: { type: 'string', description: 'Patient email address' },
+          appointmentType: {
+            type: 'string',
+            enum: ['consultation', 'follow-up', 'test-review', 'second-opinion'],
+            description: 'Type of appointment',
+          },
+          preferredDate: { type: 'string', description: 'Preferred date (YYYY-MM-DD)' },
+          preferredTime: { type: 'string', description: 'Preferred time (HH:MM)' },
+          reasonForVisit: { type: 'string', description: 'Brief reason for the appointment' },
+          location: {
+            type: 'string',
+            enum: ['gurugram-shalby', 'delhi-south-ext', 'gurugram-dlf3'],
+            description: 'Preferred clinic location',
+          },
         },
-        preferredDate: { type: 'string', description: 'Preferred date (YYYY-MM-DD)' },
-        preferredTime: { type: 'string', description: 'Preferred time (HH:MM)' },
-        reasonForVisit: { type: 'string', description: 'Brief reason for the appointment' },
-        location: {
-          type: 'string',
-          enum: ['gurugram-shalby', 'delhi-south-ext', 'gurugram-dlf3'],
-          description: 'Preferred clinic location',
-        },
+        required: ['patientName', 'patientPhone', 'appointmentType', 'preferredDate', 'preferredTime'],
       },
-      required: ['patientName', 'patientPhone', 'appointmentType', 'preferredDate', 'preferredTime'],
     },
   },
   {
-    name: 'get_patient_advice',
-    description: 'Retrieve diet, prescription, or care advice configured by the doctor for a patient',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        patientPhone: { type: 'string', description: 'Patient phone number to look up' },
-        adviceType: {
-          type: 'string',
-          enum: ['diet', 'prescription', 'test', 'medication', 'general'],
-          description: 'Type of advice to retrieve',
+    type: 'function',
+    function: {
+      name: 'get_patient_advice',
+      description: 'Retrieve diet, prescription, or care advice configured by the doctor for a patient',
+      parameters: {
+        type: 'object',
+        properties: {
+          patientPhone: { type: 'string', description: 'Patient phone number to look up' },
+          adviceType: {
+            type: 'string',
+            enum: ['diet', 'prescription', 'test', 'medication', 'general'],
+            description: 'Type of advice to retrieve',
+          },
         },
+        required: ['patientPhone', 'adviceType'],
       },
-      required: ['patientPhone', 'adviceType'],
     },
   },
   {
-    name: 'check_appointments',
-    description: 'Check upcoming appointments for a patient',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        patientPhone: { type: 'string', description: 'Patient phone number' },
+    type: 'function',
+    function: {
+      name: 'check_appointments',
+      description: 'Check upcoming appointments for a patient',
+      parameters: {
+        type: 'object',
+        properties: {
+          patientPhone: { type: 'string', description: 'Patient phone number' },
+        },
+        required: ['patientPhone'],
       },
-      required: ['patientPhone'],
     },
   },
 ];
 
 async function handleToolCall(
-  convex: import('convex/browser').ConvexHttpClient,
+  convex: ConvexHttpClient,
   toolName: string,
   toolInput: Record<string, string>,
   sessionId: string,
@@ -112,19 +126,16 @@ async function handleToolCall(
         'second-opinion': 45,
       };
 
-      // Upsert patient
       const patientId = await convex.mutation(api.patients.create, {
         name: toolInput.patientName,
         email: toolInput.patientEmail || '',
         phone: toolInput.patientPhone,
       });
 
-      // Parse scheduled time
       const scheduledAt = new Date(
         `${toolInput.preferredDate}T${toolInput.preferredTime}:00+05:30`
       ).getTime();
 
-      // Create appointment
       const appointmentId = await convex.mutation(api.appointments.create, {
         patientId,
         type: toolInput.appointmentType,
@@ -133,7 +144,6 @@ async function handleToolCall(
         notes: toolInput.reasonForVisit,
       });
 
-      // Link patient to conversation
       await convex.mutation(api.conversations.updatePatientInfo, {
         id: conversationDbId as any,
         patientId,
@@ -142,7 +152,6 @@ async function handleToolCall(
         patientEmail: toolInput.patientEmail,
       });
 
-      // Schedule reminders: 24h + 2h before
       const reminderContent = `Hi ${toolInput.patientName}, this is Kira from Dr. Veenoo Agarwal's clinic. Reminder: your ${toolInput.appointmentType.replace('-', ' ')} is scheduled for ${new Date(scheduledAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Please call +91-9667769023 if you need to reschedule.`;
 
       for (const hoursBeforeMs of [24 * 3600 * 1000, 2 * 3600 * 1000]) {
@@ -218,50 +227,53 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'sessionId required' }, { status: 400 });
   }
 
-  // Build Anthropic message history
-  const anthropicMessages: Anthropic.MessageParam[] = messages.map(
-    (m: { role: string; content: string }) => ({
+  const chatMessages: OpenAI.ChatCompletionMessageParam[] = [
+    { role: 'system', content: KIRA_SYSTEM_PROMPT },
+    ...messages.map((m: { role: string; content: string }) => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
-    })
-  );
+    })),
+  ];
 
-  let response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
+  let response = await openai.chat.completions.create({
+    model: MODEL,
     max_tokens: 1024,
-    system: KIRA_SYSTEM_PROMPT,
     tools,
-    messages: anthropicMessages,
+    messages: chatMessages,
   });
 
-  // Agentic loop — handle tool use
-  while (response.stop_reason === 'tool_use') {
-    const toolUseBlock = response.content.find((b) => b.type === 'tool_use') as Anthropic.ToolUseBlock;
-    const toolResult = await handleToolCall(
-      convex,
-      toolUseBlock.name,
-      toolUseBlock.input as Record<string, string>,
-      sessionId,
-      conversationDbId
-    );
+  // Agentic loop — handle tool calls
+  while (response.choices[0].finish_reason === 'tool_calls') {
+    const assistantMessage = response.choices[0].message;
+    chatMessages.push(assistantMessage);
 
-    anthropicMessages.push({ role: 'assistant', content: response.content });
-    anthropicMessages.push({
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: toolUseBlock.id, content: toolResult }],
-    });
+    for (const toolCall of assistantMessage.tool_calls ?? []) {
+      const toolInput = JSON.parse(toolCall.function.arguments) as Record<string, string>;
+      const toolResult = await handleToolCall(
+        convex,
+        toolCall.function.name,
+        toolInput,
+        sessionId,
+        conversationDbId
+      );
 
-    response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      chatMessages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: toolResult,
+      });
+    }
+
+    response = await openai.chat.completions.create({
+      model: MODEL,
       max_tokens: 1024,
-      system: KIRA_SYSTEM_PROMPT,
       tools,
-      messages: anthropicMessages,
+      messages: chatMessages,
     });
   }
 
-  const textBlock = response.content.find((b) => b.type === 'text') as Anthropic.TextBlock | undefined;
-  const replyText = textBlock?.text ?? "I'm sorry, I couldn't process that. Please try again.";
+  const replyText =
+    response.choices[0].message.content ?? "I'm sorry, I couldn't process that. Please try again.";
 
   return NextResponse.json({ reply: replyText });
 }
