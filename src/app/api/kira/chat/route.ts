@@ -250,6 +250,7 @@ export async function POST(req: NextRequest) {
     chatMessages.push(assistantMessage);
 
     for (const toolCall of assistantMessage.tool_calls ?? []) {
+      if (toolCall.type !== 'function') continue;
       const toolInput = JSON.parse(toolCall.function.arguments) as Record<string, string>;
       const toolResult = await handleToolCall(
         convex,
