@@ -220,7 +220,9 @@ async function handleToolCall(
 }
 
 export async function POST(req: NextRequest) {
-  const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL || process.env.CONVEX_URL;
+  if (!convexUrl) throw new Error('NEXT_PUBLIC_CONVEX_URL is not set');
+  const convex = new ConvexHttpClient(convexUrl);
   const { messages, sessionId, conversationDbId } = await req.json();
 
   if (!sessionId) {

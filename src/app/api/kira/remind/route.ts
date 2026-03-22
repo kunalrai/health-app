@@ -6,7 +6,9 @@ import { Resend } from 'resend';
 
 // Called by a cron job or manual trigger — processes all pending reminders
 export async function POST(req: NextRequest) {
-  const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL || process.env.CONVEX_URL;
+  if (!convexUrl) throw new Error('NEXT_PUBLIC_CONVEX_URL is not set');
+  const convex = new ConvexHttpClient(convexUrl);
   const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID!, process.env.TWILIO_AUTH_TOKEN!);
   const resend = new Resend(process.env.RESEND_API_KEY!);
   // Guard with a secret key
