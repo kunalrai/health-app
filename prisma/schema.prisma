@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Patient {
+  id              String        @id @default(cuid())
+  name            String
+  email           String        @unique
+  phone           String
+  smsOptIn        Boolean       @default(true)
+  voiceOptIn      Boolean       @default(true)
+  emailOptIn      Boolean       @default(true)
+  quietHoursStart String?
+  quietHoursEnd   String?
+  appointments    Appointment[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model Appointment {
+  id            String    @id @default(cuid())
+  patientId     String
+  patient       Patient   @relation(fields: [patientId], references: [id])
+  googleEventId String?   @unique
+  title         String
+  type          String
+  startTime     DateTime
+  endTime       DateTime
+  notes         String?
+  reminders     Reminder[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Reminder {
+  id            String      @id @default(cuid())
+  appointmentId String
+  appointment   Appointment @relation(fields: [appointmentId], references: [id])
+  channel       String
+  scheduledFor  DateTime
+  status        String      @default("pending")
+  sentAt        DateTime?
+  error         String?
+  createdAt     DateTime    @default(now())
+}
+
+model Admin {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  createdAt DateTime @default(now())
+}
+
+model CalendarToken {
+  id           String   @id @default(cuid())
+  accessToken  String
+  refreshToken String?
+  expiryDate   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
